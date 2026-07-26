@@ -1,15 +1,20 @@
-print ("Welcome to Smart File Organizer!")
 from pathlib import Path
 
-current_folders = Path.cwd()
+test_folder = Path("test_files")
+print("Scanning folder:", test_folder)
 
-print ("Current folders:")
-print(current_folders)
-print()
-print("Contents:")
+file_types = {
+    ".jpg": "Picture",
+    ".png": "Picture",
+    ".jpeg": "Picture",
+    ".pdf": "Document",
+    ".txt": "Document",
+    ".mp3": "Audio",
+    ".mp4": "Video",
+    ".zip": "Archive",
+    ".py": "Code",
+}
 
-for item in current_folders.iterdir():
-    if item.is_file():
-        print (item.name,"-> File")
-    else:
-        print(item.name,"-> Folder")
+for item in test_folder.iterdir():
+    category = file_types.get(item.suffix, "Unknown")
+    print(f"{item.name} → {category}")
