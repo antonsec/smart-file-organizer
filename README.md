@@ -81,6 +81,7 @@ Scanning: /Users/username/Downloads
 
 → would move  photo.jpg  →  Pictures/
 → would move  report.pdf  →  Documents/
+```
 
 
 🛠 Built With
