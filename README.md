@@ -81,4 +81,28 @@ Scanning: /Users/username/Downloads
 
 → would move  photo.jpg  →  Pictures/
 → would move  report.pdf  →  Documents/
-...
+
+
+🛠 Built With
+
+Python 3
+pathlib
+shutil
+argparse
+collections
+
+
+📚 Skills Demonstrated
+
+File system operations with pathlib & shutil
+Command-line argument parsing
+Defensive programming & error handling
+Clean function-based structure with type hints
+Dictionary mapping & default dictionaries
+Git version control & GitHub workflow
+
+
+👤 Author
+Pierre Anton
+GitHub: https://github.com/antonsec
+You can copy and paste this directly into your README.md.
