@@ -1,179 +1,198 @@
 #!/usr/bin/env python3
-"""
-Smart File Organizer
---------------------
-Automatically sorts files into category folders based on extension.
+"""Sort a folder by extension, with previews and exclusive destination creation."""
 
-Features:
-- Interactive or command-line usage
-- Dry-run mode (--dry-run)
-- Skips hidden/system files (names starting with .)
-- Handles filename collisions safely
-- Wide range of common file types
-- Clean, readable summary
-"""
-
+import argparse
+from collections import Counter
+from dataclasses import dataclass, field
+import json
+import os
 from pathlib import Path
 import shutil
-import argparse
 import sys
-from collections import defaultdict
-from typing import Dict
+from typing import Dict, List, Optional
 
 
-# ─────────────────────────────────────────────────────────────
-# Extension → Category mapping
-# ─────────────────────────────────────────────────────────────
-FILE_TYPES: Dict[str, str] = {
-    # Pictures
-    ".jpg": "Pictures", ".jpeg": "Pictures", ".png": "Pictures",
-    ".gif": "Pictures", ".bmp": "Pictures", ".webp": "Pictures",
-    ".svg": "Pictures", ".tiff": "Pictures", ".tif": "Pictures",
-    ".heic": "Pictures", ".heif": "Pictures", ".ico": "Pictures",
-    ".raw": "Pictures", ".cr2": "Pictures", ".nef": "Pictures",
-
-    # Documents
-    ".pdf": "Documents", ".txt": "Documents", ".rtf": "Documents",
-    ".doc": "Documents", ".docx": "Documents", ".odt": "Documents",
-    ".xls": "Documents", ".xlsx": "Documents", ".ods": "Documents",
-    ".ppt": "Documents", ".pptx": "Documents", ".odp": "Documents",
-    ".csv": "Documents", ".md": "Documents", ".markdown": "Documents",
-    ".epub": "Documents", ".mobi": "Documents",
-
-    # Audio
-    ".mp3": "Audio", ".wav": "Audio", ".flac": "Audio",
-    ".aac": "Audio", ".ogg": "Audio", ".m4a": "Audio",
-    ".wma": "Audio", ".aiff": "Audio", ".opus": "Audio",
-
-    # Video
-    ".mp4": "Video", ".mkv": "Video", ".avi": "Video",
-    ".mov": "Video", ".wmv": "Video", ".flv": "Video",
-    ".webm": "Video", ".m4v": "Video", ".mpeg": "Video",
-    ".mpg": "Video", ".3gp": "Video",
-
-    # Archives
-    ".zip": "Archive", ".rar": "Archive", ".7z": "Archive",
-    ".tar": "Archive", ".gz": "Archive", ".bz2": "Archive",
-    ".xz": "Archive", ".tgz": "Archive",
-
-    # Code / Scripts / Data
-    ".py": "Code", ".js": "Code", ".ts": "Code", ".jsx": "Code",
-    ".tsx": "Code", ".html": "Code", ".css": "Code", ".scss": "Code",
-    ".java": "Code", ".c": "Code", ".cpp": "Code", ".h": "Code",
-    ".hpp": "Code", ".cs": "Code", ".go": "Code", ".rs": "Code",
-    ".php": "Code", ".rb": "Code", ".sh": "Code", ".bash": "Code",
-    ".json": "Code", ".xml": "Code", ".yaml": "Code", ".yml": "Code",
-    ".toml": "Code", ".ini": "Code", ".cfg": "Code",
+CATEGORIES = {
+    "Pictures": "jpg jpeg png gif bmp webp svg tiff tif heic heif ico raw cr2 nef",
+    "Documents": "pdf txt rtf doc docx odt xls xlsx ods ppt pptx odp csv md markdown epub mobi",
+    "Audio": "mp3 wav flac aac ogg m4a wma aiff opus",
+    "Video": "mp4 mkv avi mov wmv flv webm m4v mpeg mpg 3gp",
+    "Archive": "zip rar 7z tar gz bz2 xz tgz tar.gz tar.bz2 tar.xz",
+    "Code": "py js ts jsx tsx html css scss java c cpp h hpp cs go rs php rb sh bash json xml yaml yml toml ini cfg",
 }
+FILE_TYPES = {"." + ext: category for category, extensions in CATEGORIES.items()
+              for ext in extensions.split()}
 
 
-def unique_destination(destination: Path) -> Path:
-    """If the target already exists, return a unique name with _1, _2, etc."""
-    if not destination.exists():
-        return destination
+@dataclass(frozen=True)
+class Move:
+    source: Path
+    destination: Path
+    category: str
 
-    stem = destination.stem
-    suffix = destination.suffix
-    parent = destination.parent
+
+@dataclass
+class Result:
+    counts: Counter = field(default_factory=Counter)
+    errors: List[str] = field(default_factory=list)
+
+
+def load_rules(path: Optional[Path] = None) -> Dict[str, str]:
+    """Merge a JSON extension-to-category mapping into the built-in rules."""
+    rules = dict(FILE_TYPES)
+    if path is None:
+        return rules
+    custom = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(custom, dict):
+        raise ValueError("Config must be a JSON object mapping extensions to categories.")
+    for extension, category in custom.items():
+        if (not isinstance(extension, str) or not extension.startswith(".")
+                or len(extension) < 2 or any(c in extension for c in "/\\\0")):
+            raise ValueError("Each extension must start with a dot and contain no path separators.")
+        if (not isinstance(category, str) or not category.strip()
+                or category.startswith(".") or category != category.strip()
+                or any(c in category for c in '/\\\0<>:"|?*') or category.endswith(".")):
+            raise ValueError("Categories must be plain, non-hidden folder names.")
+        rules[extension.lower()] = category
+    return rules
+
+
+def matched_extension(path: Path, rules: Dict[str, str]) -> str:
+    name = path.name.lower()
+    return next((ext for ext in sorted(rules, key=len, reverse=True)
+                 if name.endswith(ext)), "")
+
+
+def unique_destination(destination: Path, reserved=None, extension: str = "") -> Path:
+    """Reserve names case-insensitively for consistent macOS/Windows previews."""
+    reserved = reserved if reserved is not None else set()
+    suffix = destination.name[-len(extension):] if extension else destination.suffix
+    stem = destination.name[:-len(suffix)] if suffix else destination.name
+    existing = {p.name.casefold() for p in destination.parent.iterdir()} if destination.parent.is_dir() else set()
+    candidate = destination
     counter = 1
-
-    while True:
-        candidate = parent / f"{stem}_{counter}{suffix}"
-        if not candidate.exists():
-            return candidate
+    while (os.path.lexists(candidate) or candidate.name.casefold() in existing
+           or str(candidate).casefold() in reserved):
+        candidate = destination.with_name(f"{stem}_{counter}{suffix}")
         counter += 1
+    reserved.add(str(candidate).casefold())
+    return candidate
 
 
-def organize(folder: Path, dry_run: bool = False) -> None:
-    """Move files from `folder` into category subfolders inside sorted_files/."""
-    if not folder.exists():
-        print(f"❌ Folder does not exist: {folder}")
-        sys.exit(1)
+def validate_directory(path: Path) -> None:
+    if path.is_symlink():
+        raise ValueError(f"Output directory must not be a symbolic link: {path}")
+    if path.exists() and not path.is_dir():
+        raise ValueError(f"Output path is not a directory: {path}")
+
+
+def plan_moves(folder: Path, rules=None) -> List[Move]:
+    """Build a deterministic plan without creating any files or directories."""
+    folder = folder.expanduser().resolve()
     if not folder.is_dir():
-        print(f"❌ Not a folder: {folder}")
-        sys.exit(1)
-
-    sorted_dir = folder / "sorted_files"
-    if not dry_run:
-        sorted_dir.mkdir(exist_ok=True)
-
-    counts: Dict[str, int] = defaultdict(int)
-    moved = 0
-
-    print(f"\nScanning: {folder}")
-    if dry_run:
-        print("🔍 DRY-RUN mode – no files will be moved\n")
-    else:
-        print()
-
-    for item in folder.iterdir():
-        # Skip directories + hidden/system files (.DS_Store, .localized, etc.)
-        if not item.is_file() or item.name.startswith("."):
+        raise ValueError(f"Folder does not exist or is not a directory: {folder}")
+    rules = FILE_TYPES if rules is None else rules
+    output = folder / "sorted_files"
+    validate_directory(output)
+    reserved = set()
+    moves = []
+    for source in sorted(folder.iterdir(), key=lambda p: (p.name.casefold(), p.name)):
+        if source.name.startswith(".") or source.is_symlink() or not source.is_file():
             continue
+        extension = matched_extension(source, rules)
+        category = rules.get(extension, "Unknown")
+        category_dir = output / category
+        validate_directory(category_dir)
+        destination = unique_destination(category_dir / source.name, reserved, extension)
+        moves.append(Move(source, destination, category))
+    return moves
 
-        category = FILE_TYPES.get(item.suffix.lower(), "Unknown")
-        counts[category] += 1
 
-        if dry_run:
-            print(f"→ would move  {item.name}  →  {category}/")
-            continue
+def move_exclusive(source: Path, destination: Path) -> None:
+    """Copy to a new file, then remove the source; never overwrite a target.
 
-        category_dir = sorted_dir / category
-        category_dir.mkdir(exist_ok=True)
+    Uses more disk space than rename, but works across filesystems. If deletion
+    fails, retain both copies and report the error rather than risk data loss.
+    """
+    if source.is_symlink() or not source.is_file():
+        raise OSError(f"Source is no longer a regular file: {source}")
+    created = False
+    try:
+        with source.open("rb") as src:
+            with destination.open("xb") as dst:
+                created = True
+                shutil.copyfileobj(src, dst)
+                dst.flush()
+                os.fsync(dst.fileno())
+        shutil.copystat(source, destination)
+    except BaseException:
+        if created:
+            destination.unlink(missing_ok=True)
+        raise
+    source.unlink()
 
-        destination = unique_destination(category_dir / item.name)
 
+def execute_plan(moves: List[Move]) -> Result:
+    result = Result()
+    for move in moves:
         try:
-            shutil.move(str(item), str(destination))
-            print(f"✅ {item.name} → {category}/")
-            moved += 1
-        except PermissionError:
-            print(f"❌ Permission denied: {item.name}")
-        except Exception as e:
-            print(f"❌ Failed to move {item.name}: {e}")
-
-    # Summary
-    print("\nSummary")
-    print("-" * 30)
-    if not counts:
-        print("No files found to organize.")
-    else:
-        for category, amount in sorted(counts.items()):
-            print(f"{category:<12}: {amount}")
-        if not dry_run:
-            print(f"\nMoved {moved} file(s).")
+            validate_directory(move.destination.parent.parent)
+            validate_directory(move.destination.parent)
+            move.destination.parent.mkdir(parents=True, exist_ok=True)
+            move_exclusive(move.source, move.destination)
+        except (OSError, ValueError) as error:
+            message = f"{move.source.name}: {error}"
+            result.errors.append(message)
+            print(f"ERROR: {message}", file=sys.stderr)
+        else:
+            result.counts[move.category] += 1
+            print(f"Moved: {move.source.name} -> {move.destination.relative_to(move.source.parent)}")
+    return result
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Smart File Organizer – sort files by extension"
-    )
-    parser.add_argument(
-        "folder",
-        nargs="?",
-        help="Folder to organize (prompts if omitted)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be moved without actually moving files",
-    )
-    args = parser.parse_args()
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Sort files by extension into sorted_files/.")
+    parser.add_argument("folder", nargs="?", help="Folder to organize (prompts if omitted)")
+    parser.add_argument("--dry-run", action="store_true", help="Preview without changing anything")
+    parser.add_argument("--yes", "-y", action="store_true", help="Apply without the confirmation prompt")
+    parser.add_argument("--config", type=Path, help="JSON extension-to-category overrides")
+    args = parser.parse_args(argv)
+    print("Smart File Organizer\n" + "-" * 30)
+    raw = args.folder if args.folder is not None else input("Folder to organize: ").strip()
+    if not raw.strip():
+        raise ValueError("No folder provided.")
+    rules = load_rules(args.config)
+    moves = plan_moves(Path(raw), rules)
+    if not moves:
+        print("No eligible files found. Hidden files, symbolic links and folders are skipped.")
+        return 0
+    for move in moves:
+        print(f"Preview: {move.source.name} -> {move.destination.relative_to(move.source.parent)}")
+    print(f"\nPlanned: {len(moves)} file(s).")
+    if args.dry_run:
+        print("Dry run: no files or folders changed.")
+        return 0
+    if not args.yes and input("Move these files? [y/N]: ").strip().lower() not in {"y", "yes"}:
+        print("Cancelled. No files moved.")
+        return 0
+    result = execute_plan(moves)
+    print("\nSummary\n" + "-" * 30)
+    for category, count in sorted(result.counts.items()):
+        print(f"{category:<12}: {count}")
+    print(f"Moved {sum(result.counts.values())} file(s); failed {len(result.errors)}.")
+    return 1 if result.errors else 0
 
-    print("📂 Smart File Organizer")
-    print("-" * 30)
 
-    if args.folder:
-        target = Path(args.folder).expanduser().resolve()
-    else:
-        user_input = input("Enter the folder you want to organize: ").strip()
-        if not user_input:
-            print("❌ No folder provided.")
-            sys.exit(1)
-        target = Path(user_input).expanduser().resolve()
-
-    organize(target, dry_run=args.dry_run)
+def cli() -> int:
+    try:
+        return main()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled. Any completed moves remain in place.", file=sys.stderr)
+        return 130
+    except (OSError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(cli())
