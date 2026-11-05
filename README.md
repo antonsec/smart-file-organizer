@@ -1,109 +1,141 @@
-# 📂 Smart File Organizer
+# Smart File Organizer
 
-Smart File Organizer is a clean and reliable Python tool that automatically sorts files into organised category folders based on their extension.
+A dependency-free Python CLI that sorts a folder into categories, previews exact destinations, and handles filename collisions without overwriting existing files.
 
-Just point it at any folder and it will create a `sorted_files/` directory containing subfolders such as **Pictures**, **Documents**, **Audio**, **Video**, **Archive**, **Code**, and **Unknown**.
+Built by **Pierre Anton** · [GitHub](https://github.com/antonsec)
 
----
+## Quick start
 
-## ✨ Features
+Requires **Python 3.9+**. No third-party packages are needed.
 
-* Interactive mode **or** command-line argument
-* **Dry-run mode** (`--dry-run`) – preview everything safely
-* Automatically creates category folders
-* Wide support for common file types
-* Skips all hidden/system files (`.DS_Store`, `.localized`, etc.)
-* Handles filename collisions gracefully (adds `_1`, `_2`…)
-* Ignores all subfolders
-* Clear, readable summary after every run
-* Robust error handling
-
----
-
-## 📁 Supported Categories
-
-| Category     | Extensions |
-|--------------|------------|
-| **Pictures** | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.svg` `.tiff` `.tif` `.heic` `.heif` `.ico` `.raw` `.cr2` `.nef` |
-| **Documents**| `.pdf` `.txt` `.rtf` `.doc` `.docx` `.odt` `.xls` `.xlsx` `.ods` `.ppt` `.pptx` `.odp` `.csv` `.md` `.markdown` `.epub` `.mobi` |
-| **Audio**    | `.mp3` `.wav` `.flac` `.aac` `.ogg` `.m4a` `.wma` `.aiff` `.opus` |
-| **Video**    | `.mp4` `.mkv` `.avi` `.mov` `.wmv` `.flv` `.webm` `.m4v` `.mpeg` `.mpg` `.3gp` |
-| **Archive**  | `.zip` `.rar` `.7z` `.tar` `.gz` `.bz2` `.xz` `.tgz` |
-| **Code**     | `.py` `.js` `.ts` `.jsx` `.tsx` `.html` `.css` `.scss` `.java` `.c` `.cpp` `.h` `.hpp` `.cs` `.go` `.rs` `.php` `.rb` `.sh` `.bash` `.json` `.xml` `.yaml` `.yml` `.toml` `.ini` `.cfg` |
-| **Unknown**  | Any unsupported extension |
-
----
-
-## 🚀 How to Run
-
-### 1. Clone the repository
 ```bash
 git clone https://github.com/antonsec/smart-file-organizer.git
 cd smart-file-organizer
-2. Run the program
-Interactive mode (asks for the folder):
-Bashpython3 organizer.py
-Direct path:
-Bashpython3 organizer.py ~/Downloads
-Dry-run (recommended first – shows what would happen without moving anything):
-Bashpython3 organizer.py ~/Downloads --dry-run
+python3 -m venv .venv
+source .venv/bin/activate
+python organizer.py ~/Downloads --dry-run
+```
 
-📸 Example Output
-text📂 Smart File Organizer
+On Windows, activate with `.venv\Scripts\activate` instead.
+
+To apply, omit `--dry-run`. The program shows its plan and asks for confirmation:
+
+```bash
+python organizer.py ~/Downloads
+```
+
+No path supplied? The program prompts for one. Quote paths containing spaces.
+
+```bash
+python organizer.py
+python organizer.py "/path/to/My Files" --dry-run
+python organizer.py ~/Downloads --yes
+```
+
+`--yes` skips confirmation, making scripted runs possible. Run it only against the folder you intend to organize: project source files are eligible too.
+
+## Example
+
+```text
+Smart File Organizer
 ------------------------------
+Preview: notes.txt -> sorted_files/Documents/notes_1.txt
+Preview: photo.JPG -> sorted_files/Pictures/photo.JPG
 
-Scanning: /Users/username/Downloads
-
-✅ photo.jpg → Pictures/
-✅ report.pdf → Documents/
-✅ notes.txt → Documents/
-✅ song.mp3 → Audio/
-✅ movie.mp4 → Video/
-✅ archive.zip → Archive/
-✅ script.py → Code/
+Planned: 2 file(s).
+Move these files? [y/N]: y
+Moved: notes.txt -> sorted_files/Documents/notes_1.txt
+Moved: photo.JPG -> sorted_files/Pictures/photo.JPG
 
 Summary
 ------------------------------
-Archive     : 1
-Audio       : 1
-Code        : 1
-Documents   : 2
+Documents   : 1
 Pictures    : 1
-Video       : 1
-
-Moved 7 file(s).
-Dry-run example:
-text📂 Smart File Organizer
-------------------------------
-
-Scanning: /Users/username/Downloads
-🔍 DRY-RUN mode – no files will be moved
-
-→ would move  photo.jpg  →  Pictures/
-→ would move  report.pdf  →  Documents/
+Moved 2 file(s); failed 0.
 ```
 
+Here `notes.txt` already existed in the destination, so the incoming file was renamed. Compound extensions are preserved: `backup.tar.gz` becomes `backup_1.tar.gz`.
 
-🛠 Built With
+## Features
 
-Python 3
-pathlib
-shutil
-argparse
-collections
+- Deterministic previews with exact collision-adjusted destinations.
+- Dry runs create no files or directories.
+- Confirmation before applying; explicit `--yes` for automation.
+- Case-insensitive extension matching and collision planning.
+- Hidden files, subfolders and symbolic links are skipped.
+- Existing output directory symbolic links are rejected.
+- Exclusive destination creation prevents overwriting a file that appears after preview.
+- Per-file errors are reported; remaining files are still attempted.
+- Summary counts include successful moves only.
+- Ctrl+C exits cleanly; completed moves remain in place.
+- JSON category overrides without third-party dependencies.
 
+## Categories
 
-📚 Skills Demonstrated
+| Category | Examples |
+| --- | --- |
+| Pictures | `.jpg`, `.png`, `.heic`, `.svg`, `.raw` |
+| Documents | `.pdf`, `.txt`, `.docx`, `.xlsx`, `.md` |
+| Audio | `.mp3`, `.wav`, `.flac`, `.m4a` |
+| Video | `.mp4`, `.mov`, `.mkv`, `.webm` |
+| Archive | `.zip`, `.7z`, `.tar.gz`, `.tar.bz2` |
+| Code | `.py`, `.js`, `.html`, `.json`, `.yaml` |
+| Unknown | Unrecognized extensions and extensionless files |
 
-File system operations with pathlib & shutil
-Command-line argument parsing
-Defensive programming & error handling
-Clean function-based structure with type hints
-Dictionary mapping & default dictionaries
-Git version control & GitHub workflow
+See `CATEGORIES` in `organizer.py` for the complete default mapping.
 
+## Custom categories
 
-👤 Author
-Pierre Anton
-GitHub: https://github.com/antonsec
-You can copy and paste this directly into your README.md.
+Copy `rules.example.json`, edit it, and provide its path:
+
+```bash
+python organizer.py ~/Downloads --config rules.example.json --dry-run
+```
+
+```json
+{
+  ".pdf": "Reading",
+  ".blend": "Design",
+  ".fig": "Design"
+}
+```
+
+Custom rules extend or override defaults. Category values must be plain folder names; paths and hidden names are rejected. Longest extensions match first. Keep your config outside the folder being organized, or use a hidden filename such as `.organizer-rules.json` so it is skipped.
+
+## How it works
+
+1. Validate the input folder and load rules.
+2. Build a move plan, reserving destination filenames.
+3. Display the plan and request confirmation.
+4. Copy each source into an exclusively created destination, preserve basic metadata, then remove the source.
+5. Report successful moves and errors separately.
+
+Planning and execution are separate functions so behavior can be tested without touching personal folders. The core uses `pathlib`, dataclasses, `argparse`, and standard-library file operations.
+
+### Limits and failure behavior
+
+This is a local utility for folders you control, not a background watcher or a security boundary. Avoid editing files or running multiple organizers against the same folder during a run. Files are not locked; hostile or concurrent changes to paths are outside its guarantees.
+
+Copy-then-delete uses additional disk space and is slower than a rename, but allows exclusive destination creation. Basic metadata is copied; ownership and every platform-specific attribute are not guaranteed. If source deletion fails, both copies remain and the move is reported as failed. Ordinary copy errors remove the incomplete destination; a forced process kill or power loss may leave a partial file. There is no undo command. Keep backups of important files.
+
+Exit codes: `0` success, dry run or declined confirmation; `1` validation/I/O/move failure; `2` invalid command-line arguments; `130` interrupted input or Ctrl+C.
+
+## Tests
+
+All tests use isolated temporary folders:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Tests cover previews, content preservation, collisions, symlinks, custom rules, permission and copy failures, confirmation, and interruption. GitHub Actions is configured to run the suite on Linux, macOS and Windows with Python 3.9 and 3.13 after pushes and pull requests.
+
+## Project layout
+
+```text
+organizer.py           CLI, planning, rules and file execution
+rules.example.json     Optional custom rules
+requirements.txt       Documents the zero-dependency runtime
+tests/                 Standard-library unittest suite
+.github/workflows/     Cross-platform CI configuration
+```

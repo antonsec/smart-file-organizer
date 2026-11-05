@@ -1,2 +1,2 @@
-# No external dependencies required
-# Uses only Python standard library modules
+# No external dependencies required.
+# Runtime and tests use only the Python standard library (Python 3.9+).
