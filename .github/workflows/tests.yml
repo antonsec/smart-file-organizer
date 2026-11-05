@@ -7,7 +7,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Pin Linux so Python 3.9 remains available when ubuntu-latest changes.
+        os: [ubuntu-22.04, macos-latest, windows-latest]
         python: ['3.9', '3.13']
     runs-on: ${{ matrix.os }}
     steps:
