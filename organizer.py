@@ -23,6 +23,15 @@ CATEGORIES = {
 FILE_TYPES = {"." + ext: category for category, extensions in CATEGORIES.items()
               for ext in extensions.split()}
 
+# Windows also reserves device names when followed by an extension.
+WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
+    prefix + digit for prefix in ("COM", "LPT") for digit in "123456789¹²³"
+}
+
+
+def has_control_characters(value: str) -> bool:
+    return any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value)
+
 
 @dataclass(frozen=True)
 class Move:
@@ -47,12 +56,15 @@ def load_rules(path: Optional[Path] = None) -> Dict[str, str]:
         raise ValueError("Config must be a JSON object mapping extensions to categories.")
     for extension, category in custom.items():
         if (not isinstance(extension, str) or not extension.startswith(".")
-                or len(extension) < 2 or any(c in extension for c in "/\\\0")):
-            raise ValueError("Each extension must start with a dot and contain no path separators.")
+                or len(extension) < 2 or has_control_characters(extension)
+                or any(c in extension for c in "/\\\0")):
+            raise ValueError("Each extension must start with a dot and contain no path separators or control characters.")
         if (not isinstance(category, str) or not category.strip()
                 or category.startswith(".") or category != category.strip()
+                or has_control_characters(category)
+                or category.split(".", 1)[0].rstrip(" ").upper() in WINDOWS_RESERVED_NAMES
                 or any(c in category for c in '/\\\0<>:"|?*') or category.endswith(".")):
-            raise ValueError("Categories must be plain, non-hidden folder names.")
+            raise ValueError("Categories must be plain, non-hidden folder names without control characters or Windows reserved device names.")
         rules[extension.lower()] = category
     return rules
 
@@ -125,11 +137,27 @@ def move_exclusive(source: Path, destination: Path) -> None:
                 dst.flush()
                 os.fsync(dst.fileno())
         shutil.copystat(source, destination)
-    except BaseException:
+    except BaseException as error:
         if created:
-            destination.unlink(missing_ok=True)
+            try:
+                destination.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                message = (
+                    f"Could not remove incomplete destination '{destination}': {cleanup_error}. "
+                    "Source retained; inspect the destination before retrying."
+                )
+                if isinstance(error, Exception):
+                    raise OSError(f"{error}. {message}") from error
+                # A cleanup failure must never turn cancellation into a file error.
+                print(f"WARNING: {message}", file=sys.stderr)
         raise
-    source.unlink()
+    try:
+        source.unlink()
+    except OSError as error:
+        raise OSError(
+            f"Copy completed at '{destination}', but could not remove source '{source}': "
+            f"{error}. Both copies retained."
+        ) from error
 
 
 def execute_plan(moves: List[Move]) -> Result:

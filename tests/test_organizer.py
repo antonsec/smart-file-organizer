@@ -115,6 +115,8 @@ class OrganizerTests(unittest.TestCase):
         self.assertEqual(moves[0].destination.read_bytes(), source.read_bytes())
         self.assertEqual(len(result.errors), 1)
         self.assertFalse(result.counts)
+        self.assertIn('Both copies retained', result.errors[0])
+        self.assertIn(str(moves[0].destination), result.errors[0])
 
     def test_interrupted_copy_cleans_partial_destination(self):
         source = self.file('notes.txt')
@@ -124,6 +126,98 @@ class OrganizerTests(unittest.TestCase):
                 app.execute_plan(moves)
         self.assertTrue(source.exists())
         self.assertFalse(moves[0].destination.exists())
+
+    def test_copy_and_cleanup_failures_reported_together(self):
+        source = self.file('notes.txt')
+        moves = app.plan_moves(self.root)
+        def partial_copy(src, dst):
+            dst.write(b'partial')
+            raise OSError('disk full')
+        with patch('organizer.shutil.copyfileobj', side_effect=partial_copy), \
+                patch.object(Path, 'unlink', side_effect=PermissionError('cleanup denied')):
+            result = self.run_quiet(app.execute_plan, moves)
+        self.assertEqual(source.read_bytes(), b'test content')
+        self.assertEqual(moves[0].destination.read_bytes(), b'partial')
+        self.assertFalse(result.counts)
+        self.assertEqual(len(result.errors), 1)
+        for text in ['disk full', 'cleanup denied', str(moves[0].destination), 'Source retained']:
+            self.assertIn(text, result.errors[0])
+
+    def test_interrupt_with_cleanup_failure_stops_cli(self):
+        first = self.file('a.txt')
+        second = self.file('b.txt')
+        output = io.StringIO()
+        def interrupted_copy(src, dst):
+            dst.write(b'partial')
+            raise KeyboardInterrupt
+        with patch('sys.argv', ['organizer.py', str(self.root), '--yes']), \
+                patch('organizer.shutil.copyfileobj', side_effect=interrupted_copy) as copy, \
+                patch.object(Path, 'unlink', side_effect=PermissionError('cleanup denied')), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(output):
+            self.assertEqual(app.cli(), 130)
+        self.assertEqual(copy.call_count, 1)
+        self.assertEqual(first.read_bytes(), b'test content')
+        self.assertEqual(second.read_bytes(), b'test content')
+        destination = self.root / 'sorted_files/Documents/a.txt'
+        self.assertEqual(destination.read_bytes(), b'partial')
+        self.assertFalse((destination.parent / 'b.txt').exists())
+        self.assertIn(str(destination), output.getvalue())
+        self.assertIn('cleanup denied', output.getvalue())
+        self.assertIn('Cancelled', output.getvalue())
+
+    def test_metadata_failure_removes_destination_and_keeps_source(self):
+        source = self.file('notes.txt')
+        moves = app.plan_moves(self.root)
+        with patch('organizer.shutil.copystat', side_effect=PermissionError('metadata denied')):
+            result = self.run_quiet(app.execute_plan, moves)
+        self.assertEqual(source.read_bytes(), b'test content')
+        self.assertFalse(moves[0].destination.exists())
+        self.assertEqual(len(result.errors), 1)
+        self.assertIn('metadata denied', result.errors[0])
+        self.assertFalse(result.counts)
+
+    def test_copy_failure_does_not_stop_later_moves(self):
+        first = self.file('a.txt')
+        second = self.file('b.txt', b'second file')
+        moves = app.plan_moves(self.root)
+        real_copy = app.shutil.copyfileobj
+        def copy(src, dst):
+            if Path(src.name) == first.resolve():
+                dst.write(b'partial')
+                raise OSError('disk full')
+            real_copy(src, dst)
+        with patch('organizer.shutil.copyfileobj', side_effect=copy):
+            result = self.run_quiet(app.execute_plan, moves)
+        self.assertEqual(first.read_bytes(), b'test content')
+        self.assertFalse(moves[0].destination.exists())
+        self.assertFalse(second.exists())
+        self.assertEqual(moves[1].destination.read_bytes(), b'second file')
+        self.assertEqual(result.counts, {'Documents': 1})
+        self.assertEqual(len(result.errors), 1)
+
+    def test_reserved_category_names_rejected(self):
+        names = ['CON', 'con', 'PRN', 'AUX', 'NUL', 'nul.txt', 'CON .txt',
+                 'CONIN$', 'CONOUT$']
+        names += [prefix + digit + suffix for prefix in ['COM', 'LPT']
+                  for digit in '123456789¹²³' for suffix in ['', '.files']]
+        for category in names:
+            config = self.file('.rules.json', json.dumps({'.txt': category}).encode())
+            with self.subTest(category=category), self.assertRaisesRegex(ValueError, 'reserved'):
+                app.load_rules(config)
+
+    def test_control_characters_in_rules_rejected(self):
+        for code in list(range(32)) + list(range(127, 160)):
+            char = chr(code)
+            for rules in [{'.txt': 'Docs' + char + 'Files'}, {'.t' + char + 'xt': 'Docs'}]:
+                config = self.file('.rules.json', json.dumps(rules).encode())
+                with self.subTest(rules=rules), self.assertRaises(ValueError):
+                    app.load_rules(config)
+
+    def test_valid_category_names_remain_supported(self):
+        for category in ['Console', 'NULL', 'COM10', 'LPT0', 'Reading.List', 'École', 'Design Files']:
+            config = self.file('.rules.json', json.dumps({'.txt': category}).encode())
+            with self.subTest(category=category):
+                self.assertEqual(app.load_rules(config)['.txt'], category)
 
     def test_planned_collisions_are_reserved(self):
         destination = self.root / 'photo.jpg'

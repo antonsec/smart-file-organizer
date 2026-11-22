@@ -100,7 +100,7 @@ python organizer.py ~/Downloads --config rules.example.json --dry-run
 }
 ```
 
-Custom rules extend or override defaults. Category values must be plain folder names; paths and hidden names are rejected. Longest extensions match first. Keep your config outside the folder being organized, or use a hidden filename such as `.organizer-rules.json` so it is skipped.
+Custom rules extend or override defaults. Category values must be plain folder names; paths, hidden names, control characters, and Windows reserved device names (such as `CON`, `NUL`, or `COM1`, including names like `NUL.txt`) are rejected. Extensions cannot contain control characters either. Longest extensions match first. Keep your config outside the folder being organized, or use a hidden filename such as `.organizer-rules.json` so it is skipped.
 
 ## How it works
 
@@ -116,7 +116,7 @@ Planning and execution are separate functions so behavior can be tested without 
 
 This is a local utility for folders you control, not a background watcher or a security boundary. Avoid editing files or running multiple organizers against the same folder during a run. Files are not locked; hostile or concurrent changes to paths are outside its guarantees.
 
-Copy-then-delete uses additional disk space and is slower than a rename, but allows exclusive destination creation. Basic metadata is copied; ownership and every platform-specific attribute are not guaranteed. If source deletion fails, both copies remain and the move is reported as failed. Ordinary copy errors remove the incomplete destination; a forced process kill or power loss may leave a partial file. There is no undo command. Keep backups of important files.
+Copy-then-delete uses additional disk space and is slower than a rename, but allows exclusive destination creation. Basic metadata is copied; ownership and every platform-specific attribute are not guaranteed. If source deletion fails, both copies remain and the error identifies the completed destination. Ordinary copy errors remove the incomplete destination when possible. If cleanup also fails, the error includes both failures and the destination path; the source remains. Inspect that destination and remove any incomplete copy before retrying. Ctrl+C still stops the run if cleanup fails, with a warning identifying the leftover destination. A forced process kill or power loss may leave a partial file. There is no undo command. Keep backups of important files.
 
 Exit codes: `0` success, dry run or declined confirmation; `1` validation/I/O/move failure; `2` invalid command-line arguments; `130` interrupted input or Ctrl+C.
 
@@ -128,7 +128,7 @@ All tests use isolated temporary folders:
 python -m unittest discover -s tests -v
 ```
 
-Tests cover previews, content preservation, collisions, symlinks, custom rules, permission and copy failures, confirmation, and interruption. GitHub Actions is configured to run the suite on Linux, macOS and Windows with Python 3.9 and 3.13 after pushes and pull requests.
+Tests cover previews, content preservation, collisions, symlinks, custom rules, permission and copy failures, metadata failures, cleanup failures, continuation after a failed move, confirmation, and interruption. Rule validation tests include Windows reserved names and control characters. GitHub Actions is configured to run the suite on Linux, macOS and Windows with Python 3.9 and 3.13 after pushes and pull requests.
 
 ## Project layout
 
