@@ -1,141 +1,88 @@
 # Smart File Organizer
 
-A dependency-free Python CLI that sorts a folder into categories, previews exact destinations, and handles filename collisions without overwriting existing files.
+A Python command-line tool that sorts files by type into `sorted_files/` inside your chosen folder. It previews changes and asks before moving anything.
 
 Built by **Pierre Anton** · [GitHub](https://github.com/antonsec)
 
-## Quick start
+## Getting started
 
-Requires **Python 3.9+**. No third-party packages are needed.
+Requires **Python 3.9+**. No extra packages are needed.
 
 ```bash
 git clone https://github.com/antonsec/smart-file-organizer.git
 cd smart-file-organizer
-python3 -m venv .venv
-source .venv/bin/activate
-python organizer.py ~/Downloads --dry-run
+python3 organizer.py ~/Downloads --dry-run
 ```
 
-On Windows, activate with `.venv\Scripts\activate` instead.
-
-To apply, omit `--dry-run`. The program shows its plan and asks for confirmation:
+This previews the changes without moving files. To organize the folder, run:
 
 ```bash
-python organizer.py ~/Downloads
+python3 organizer.py ~/Downloads
 ```
 
-No path supplied? The program prompts for one. Quote paths containing spaces.
+Check the preview, then enter `y` to confirm. On Windows, use `python` instead of `python3` and supply your folder path. Put paths with spaces in quotes.
 
-```bash
-python organizer.py
-python organizer.py "/path/to/My Files" --dry-run
-python organizer.py ~/Downloads --yes
-```
+| Option | What it does |
+| --- | --- |
+| `--dry-run` | Preview without changing anything |
+| `--yes` or `-y` | Move files without asking for confirmation |
+| `--config PATH` | Use custom sorting rules |
 
-`--yes` skips confirmation, making scripted runs possible. Run it only against the folder you intend to organize: project source files are eligible too.
+If you leave out the folder path, the tool asks for one. Choose the target folder carefully: project files are eligible too.
 
-## Example
+## What gets sorted?
+
+Files go into Pictures, Documents, Audio, Video, Archive, Code, or Unknown folders. Only files directly inside the chosen folder are sorted. Hidden files, subfolders, and symbolic links are skipped.
+
+For example:
 
 ```text
-Smart File Organizer
-------------------------------
-Preview: notes.txt -> sorted_files/Documents/notes_1.txt
-Preview: photo.JPG -> sorted_files/Pictures/photo.JPG
-
-Planned: 2 file(s).
-Move these files? [y/N]: y
-Moved: notes.txt -> sorted_files/Documents/notes_1.txt
-Moved: photo.JPG -> sorted_files/Pictures/photo.JPG
-
-Summary
-------------------------------
-Documents   : 1
-Pictures    : 1
-Moved 2 file(s); failed 0.
+photo.jpg    → sorted_files/Pictures/photo.jpg
+notes.txt    → sorted_files/Documents/notes.txt
+backup.zip   → sorted_files/Archive/backup.zip
 ```
 
-Here `notes.txt` already existed in the destination, so the incoming file was renamed. Compound extensions are preserved: `backup.tar.gz` becomes `backup_1.tar.gz`.
+Existing files are never overwritten. If a name is taken, the tool adds a number, such as `notes_1.txt` or `backup_1.tar.gz`.
 
-## Features
+## Custom rules
 
-- Deterministic previews with exact collision-adjusted destinations.
-- Dry runs create no files or directories.
-- Confirmation before applying; explicit `--yes` for automation.
-- Case-insensitive extension matching and collision planning.
-- Hidden files, subfolders and symbolic links are skipped.
-- Existing output directory symbolic links are rejected.
-- Exclusive destination creation prevents overwriting a file that appears after preview.
-- Per-file errors are reported; remaining files are still attempted.
-- Summary counts include successful moves only.
-- Ctrl+C exits cleanly; completed moves remain in place.
-- JSON category overrides without third-party dependencies.
-
-## Categories
-
-| Category | Examples |
-| --- | --- |
-| Pictures | `.jpg`, `.png`, `.heic`, `.svg`, `.raw` |
-| Documents | `.pdf`, `.txt`, `.docx`, `.xlsx`, `.md` |
-| Audio | `.mp3`, `.wav`, `.flac`, `.m4a` |
-| Video | `.mp4`, `.mov`, `.mkv`, `.webm` |
-| Archive | `.zip`, `.7z`, `.tar.gz`, `.tar.bz2` |
-| Code | `.py`, `.js`, `.html`, `.json`, `.yaml` |
-| Unknown | Unrecognized extensions and extensionless files |
-
-See `CATEGORIES` in `organizer.py` for the complete default mapping.
-
-## Custom categories
-
-Copy `rules.example.json`, edit it, and provide its path:
-
-```bash
-python organizer.py ~/Downloads --config rules.example.json --dry-run
-```
+Create a JSON file, or edit `rules.example.json`:
 
 ```json
 {
   ".pdf": "Reading",
-  ".blend": "Design",
-  ".fig": "Design"
+  ".blend": "Design"
 }
 ```
 
-Custom rules extend or override defaults. Category values must be plain folder names; paths, hidden names, control characters, and Windows reserved device names (such as `CON`, `NUL`, or `COM1`, including names like `NUL.txt`) are rejected. Extensions cannot contain control characters either. Longest extensions match first. Keep your config outside the folder being organized, or use a hidden filename such as `.organizer-rules.json` so it is skipped.
+Then preview with it:
 
-## How it works
+```bash
+python3 organizer.py ~/Downloads --config rules.example.json --dry-run
+```
 
-1. Validate the input folder and load rules.
-2. Build a move plan, reserving destination filenames.
-3. Display the plan and request confirmation.
-4. Copy each source into an exclusively created destination, preserve basic metadata, then remove the source.
-5. Report successful moves and errors separately.
+Custom rules extend or replace the defaults. Use plain folder names; paths, hidden names, control characters, and Windows reserved names such as `CON` are rejected. Longer extensions, such as `.tar.gz`, match first.
 
-Planning and execution are separate functions so behavior can be tested without touching personal folders. The core uses `pathlib`, dataclasses, `argparse`, and standard-library file operations.
+Keep the config outside the folder being sorted, or give it a hidden name such as `.organizer-rules.json` so it is skipped.
 
-### Limits and failure behavior
+## Safety and limits
 
-This is a local utility for folders you control, not a background watcher or a security boundary. Avoid editing files or running multiple organizers against the same folder during a run. Files are not locked; hostile or concurrent changes to paths are outside its guarantees.
+Keep backups of important files. There is no undo command.
 
-Copy-then-delete uses additional disk space and is slower than a rename, but allows exclusive destination creation. Basic metadata is copied; ownership and every platform-specific attribute are not guaranteed. If source deletion fails, both copies remain and the error identifies the completed destination. Ordinary copy errors remove the incomplete destination when possible. If cleanup also fails, the error includes both failures and the destination path; the source remains. Inspect that destination and remove any incomplete copy before retrying. Ctrl+C still stops the run if cleanup fails, with a warning identifying the leftover destination. A forced process kill or power loss may leave a partial file. There is no undo command. Keep backups of important files.
+- Files are copied before the originals are deleted, so extra disk space is needed. Some platform-specific metadata may not be preserved.
+- If a move fails, the error is reported and remaining files are attempted. If the original cannot be deleted, both copies remain.
+- Incomplete copies are removed when possible. If cleanup fails, the error identifies the leftover file for you to inspect before retrying.
+- Ctrl+C stops the run; completed moves stay in place. A forced shutdown can leave a partial copy.
+- Avoid editing files or running another organizer on the same folder during a run. Output folders that are symbolic links are rejected.
 
-Exit codes: `0` success, dry run or declined confirmation; `1` validation/I/O/move failure; `2` invalid command-line arguments; `130` interrupted input or Ctrl+C.
+Exit codes: `0` success, preview, or declined confirmation; `1` file or configuration error; `2` invalid command; `130` cancellation.
 
 ## Tests
 
-All tests use isolated temporary folders:
-
 ```bash
-python -m unittest discover -s tests -v
+python3 -m unittest discover -s tests -v
 ```
 
-Tests cover previews, content preservation, collisions, symlinks, custom rules, permission and copy failures, metadata failures, cleanup failures, continuation after a failed move, confirmation, and interruption. Rule validation tests include Windows reserved names and control characters. GitHub Actions is configured to run the suite on Linux, macOS and Windows with Python 3.9 and 3.13 after pushes and pull requests.
+Tests use temporary folders and cover sorting, collisions, custom rules, file errors, and cancellation. GitHub Actions is configured to test Python 3.9 and 3.13 on Linux, macOS, and Windows.
 
-## Project layout
-
-```text
-organizer.py           CLI, planning, rules and file execution
-rules.example.json     Optional custom rules
-requirements.txt       Documents the zero-dependency runtime
-tests/                 Standard-library unittest suite
-.github/workflows/     Cross-platform CI configuration
-```
+The implementation is in `organizer.py`, with separate functions for planning and moving files. It uses only the Python standard library.
