@@ -144,6 +144,8 @@ class OrganizerTests(unittest.TestCase):
             self.assertIn(text, result.errors[0])
 
     def test_interrupt_with_cleanup_failure_stops_cli(self):
+        # The planner resolves paths; temporary folders can have aliases on Windows.
+        self.root = self.root / '..' / self.root.name
         first = self.file('a.txt')
         second = self.file('b.txt')
         output = io.StringIO()
@@ -158,7 +160,7 @@ class OrganizerTests(unittest.TestCase):
         self.assertEqual(copy.call_count, 1)
         self.assertEqual(first.read_bytes(), b'test content')
         self.assertEqual(second.read_bytes(), b'test content')
-        destination = self.root / 'sorted_files/Documents/a.txt'
+        destination = self.root.resolve() / 'sorted_files/Documents/a.txt'
         self.assertEqual(destination.read_bytes(), b'partial')
         self.assertFalse((destination.parent / 'b.txt').exists())
         self.assertIn(str(destination), output.getvalue())
