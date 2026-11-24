@@ -2,6 +2,8 @@
 """Sort a folder by extension, with previews and exclusive destination creation."""
 
 import argparse
+import fnmatch
+import hashlib
 from collections import Counter
 from dataclasses import dataclass, field
 import json
@@ -10,6 +12,9 @@ from pathlib import Path
 import shutil
 import sys
 from typing import Dict, List, Optional
+
+from history import (ReportError, RunReport, WINDOWS_RESERVED_NAMES, load_report,
+                     validate_report_directory)
 
 
 CATEGORIES = {
@@ -22,12 +27,6 @@ CATEGORIES = {
 }
 FILE_TYPES = {"." + ext: category for category, extensions in CATEGORIES.items()
               for ext in extensions.split()}
-
-# Windows also reserves device names when followed by an extension.
-WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} | {
-    prefix + digit for prefix in ("COM", "LPT") for digit in "123456789¹²³"
-}
-
 
 def has_control_characters(value: str) -> bool:
     return any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value)
@@ -98,7 +97,7 @@ def validate_directory(path: Path) -> None:
         raise ValueError(f"Output path is not a directory: {path}")
 
 
-def plan_moves(folder: Path, rules=None) -> List[Move]:
+def plan_moves(folder: Path, rules=None, excludes=None, protected=None) -> List[Move]:
     """Build a deterministic plan without creating any files or directories."""
     folder = folder.expanduser().resolve()
     if not folder.is_dir():
@@ -107,9 +106,15 @@ def plan_moves(folder: Path, rules=None) -> List[Move]:
     output = folder / "sorted_files"
     validate_directory(output)
     reserved = set()
+    protected = {path.expanduser().resolve() for path in (protected or [])}
+    excludes = excludes or []
     moves = []
     for source in sorted(folder.iterdir(), key=lambda p: (p.name.casefold(), p.name)):
         if source.name.startswith(".") or source.is_symlink() or not source.is_file():
+            continue
+        if (source.resolve() in protected
+                or any(fnmatch.fnmatchcase(source.name.casefold(), pattern.casefold())
+                       for pattern in excludes)):
             continue
         extension = matched_extension(source, rules)
         category = rules.get(extension, "Unknown")
@@ -120,7 +125,22 @@ def plan_moves(folder: Path, rules=None) -> List[Move]:
     return moves
 
 
-def move_exclusive(source: Path, destination: Path) -> None:
+def file_fingerprint(path: Path) -> dict:
+    """Hash a regular file and reject changes observed while reading it."""
+    if path.is_symlink() or not path.is_file():
+        raise OSError(f'Not a regular file: {path}')
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        before = os.fstat(stream.fileno())
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+        after = os.fstat(stream.fileno())
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise OSError(f'File changed while being checked: {path}')
+    return dict(size=after.st_size, mtime_ns=after.st_mtime_ns, sha256=digest.hexdigest())
+
+
+def move_exclusive(source: Path, destination: Path, before_delete=None, expected=None) -> None:
     """Copy to a new file, then remove the source; never overwrite a target.
 
     Uses more disk space than rename, but works across filesystems. If deletion
@@ -128,6 +148,8 @@ def move_exclusive(source: Path, destination: Path) -> None:
     """
     if source.is_symlink() or not source.is_file():
         raise OSError(f"Source is no longer a regular file: {source}")
+    if expected is not None and file_fingerprint(source) != expected:
+        raise ValueError(f'File changed since it was organized: {source}')
     created = False
     try:
         with source.open("rb") as src:
@@ -137,6 +159,10 @@ def move_exclusive(source: Path, destination: Path) -> None:
                 dst.flush()
                 os.fsync(dst.fileno())
         shutil.copystat(source, destination)
+        if expected is not None and file_fingerprint(destination) != expected:
+            raise ValueError(f'Copied file does not match its recovery record: {source}')
+        if before_delete is not None:
+            before_delete(destination)
     except BaseException as error:
         if created:
             try:
@@ -147,7 +173,8 @@ def move_exclusive(source: Path, destination: Path) -> None:
                     "Source retained; inspect the destination before retrying."
                 )
                 if isinstance(error, Exception):
-                    raise OSError(f"{error}. {message}") from error
+                    error_type = ReportError if isinstance(error, ReportError) else OSError
+                    raise error_type(f"{error}. {message}") from error
                 # A cleanup failure must never turn cancellation into a file error.
                 print(f"WARNING: {message}", file=sys.stderr)
         raise
@@ -160,54 +187,143 @@ def move_exclusive(source: Path, destination: Path) -> None:
         ) from error
 
 
-def execute_plan(moves: List[Move]) -> Result:
+def execute_plan(moves: List[Move], report=None) -> Result:
     result = Result()
-    for move in moves:
+    for index, move in enumerate(moves):
         try:
             validate_directory(move.destination.parent.parent)
             validate_directory(move.destination.parent)
             move.destination.parent.mkdir(parents=True, exist_ok=True)
-            move_exclusive(move.source, move.destination)
+            if report is None:
+                move_exclusive(move.source, move.destination)
+            else:
+                move_exclusive(move.source, move.destination,
+                               before_delete=lambda path: report.record(
+                                   'ready', id=index, fingerprint=file_fingerprint(path)))
+                report.record('moved', id=index)
+        except ReportError:
+            raise
+        except (KeyboardInterrupt, SystemExit):
+            if report is not None:
+                try:
+                    report.record('interrupted', id=index)
+                except ReportError as error:
+                    print(f'WARNING: {error}', file=sys.stderr)
+            raise
         except (OSError, ValueError) as error:
             message = f"{move.source.name}: {error}"
             result.errors.append(message)
             print(f"ERROR: {message}", file=sys.stderr)
+            if report is not None:
+                report.record('failed', id=index, error=str(error))
         else:
             result.counts[move.category] += 1
             print(f"Moved: {move.source.name} -> {move.destination.relative_to(move.source.parent)}")
     return result
 
 
+def validate_undo_entry(folder, entry):
+    source, destination = entry['source'], entry['destination']
+    validate_directory(folder / 'sorted_files')
+    validate_directory(destination.parent)
+    if (os.path.lexists(source)
+            or source.name.casefold() in {path.name.casefold() for path in folder.iterdir()}):
+        raise ValueError(f'Original path is occupied: {source}')
+    if file_fingerprint(destination) != entry['fingerprint']:
+        raise ValueError(f'File changed since it was organized: {destination}')
+
+
+def undo_report(path: Path, dry_run=False, yes=False) -> int:
+    path = path.expanduser().absolute()
+    folder, entries = load_report(path)
+    eligible = []
+    errors = 0
+    for entry in reversed(entries):
+        if entry['fingerprint'] is None or entry['restored']:
+            continue
+        try:
+            validate_undo_entry(folder, entry)
+        except (OSError, ValueError) as error:
+            print(f'ERROR: {error}', file=sys.stderr)
+            errors += 1
+        else:
+            eligible.append(entry)
+            print(f"Restore: {entry['destination'].relative_to(folder)} -> {entry['source'].name}")
+    print(f'Planned: {len(eligible)} restore(s); blocked {errors}.')
+    if dry_run:
+        print('Dry run: no files or reports changed.')
+        return 1 if errors else 0
+    if not eligible:
+        print('No eligible files to restore.')
+        return 1 if errors else 0
+    if not yes and input('Restore these files? [y/N]: ').strip().lower() not in {'y', 'yes'}:
+        print('Cancelled. No files restored.')
+        return 0
+    restored = 0
+    with RunReport.append(path) as report:
+        for entry in eligible:
+            try:
+                validate_undo_entry(folder, entry)
+                move_exclusive(entry['destination'], entry['source'],
+                               expected=entry['fingerprint'],
+                               before_delete=lambda target: report.record('restoring', id=entry['id']))
+                report.record('restored', id=entry['id'])
+            except ReportError:
+                raise
+            except (OSError, ValueError) as error:
+                print(f'ERROR: {error}', file=sys.stderr)
+                errors += 1
+            else:
+                restored += 1
+                print(f"Restored: {entry['source'].name}")
+    print(f'Restored {restored} file(s); failed {errors}.')
+    return 1 if errors else 0
+
+
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Sort files by extension into sorted_files/.")
-    parser.add_argument("folder", nargs="?", help="Folder to organize (prompts if omitted)")
-    parser.add_argument("--dry-run", action="store_true", help="Preview without changing anything")
-    parser.add_argument("--yes", "-y", action="store_true", help="Apply without the confirmation prompt")
-    parser.add_argument("--config", type=Path, help="JSON extension-to-category overrides")
+    parser = argparse.ArgumentParser(description='Sort files by extension into sorted_files/.')
+    parser.add_argument('folder', nargs='?', help='Folder to organize (prompts if omitted)')
+    parser.add_argument('--dry-run', action='store_true', help='Preview without changing anything')
+    parser.add_argument('--yes', '-y', action='store_true', help='Skip the confirmation prompt')
+    parser.add_argument('--config', type=Path, help='JSON extension-to-category overrides')
+    parser.add_argument('--exclude', action='append', default=[], metavar='PATTERN',
+                        help='Skip matching filenames, e.g. "*.tmp" (repeatable, case-insensitive)')
+    parser.add_argument('--undo', type=Path, metavar='REPORT', help='Restore files using a run report')
     args = parser.parse_args(argv)
-    print("Smart File Organizer\n" + "-" * 30)
-    raw = args.folder if args.folder is not None else input("Folder to organize: ").strip()
+    if args.undo is not None:
+        if args.folder is not None or args.config is not None or args.exclude:
+            parser.error('--undo cannot be combined with a folder, --config, or --exclude')
+        return undo_report(args.undo, args.dry_run, args.yes)
+    for pattern in args.exclude:
+        if not pattern or any(c in pattern for c in '/\\') or has_control_characters(pattern):
+            parser.error('--exclude requires a filename pattern without path separators or control characters')
+    print('Smart File Organizer\n' + '-' * 30)
+    raw = args.folder if args.folder is not None else input('Folder to organize: ').strip()
     if not raw.strip():
-        raise ValueError("No folder provided.")
+        raise ValueError('No folder provided.')
+    folder = Path(raw).expanduser().resolve()
     rules = load_rules(args.config)
-    moves = plan_moves(Path(raw), rules)
+    moves = plan_moves(folder, rules, args.exclude, [args.config] if args.config else [])
     if not moves:
-        print("No eligible files found. Hidden files, symbolic links and folders are skipped.")
+        print('No eligible files found. Hidden files, symbolic links, folders and excluded files are skipped.')
         return 0
+    validate_report_directory(folder)
     for move in moves:
-        print(f"Preview: {move.source.name} -> {move.destination.relative_to(move.source.parent)}")
-    print(f"\nPlanned: {len(moves)} file(s).")
+        print(f'Preview: {move.source.name} -> {move.destination.relative_to(move.source.parent)}')
+    print(f'\nPlanned: {len(moves)} file(s).')
     if args.dry_run:
-        print("Dry run: no files or folders changed.")
+        print('Dry run: no files or folders changed.')
         return 0
-    if not args.yes and input("Move these files? [y/N]: ").strip().lower() not in {"y", "yes"}:
-        print("Cancelled. No files moved.")
+    if not args.yes and input('Move these files? [y/N]: ').strip().lower() not in {'y', 'yes'}:
+        print('Cancelled. No files moved.')
         return 0
-    result = execute_plan(moves)
-    print("\nSummary\n" + "-" * 30)
+    with RunReport.create(folder, moves) as report:
+        print(f'Run report: {report.path}')
+        result = execute_plan(moves, report)
+    print('\nSummary\n' + '-' * 30)
     for category, count in sorted(result.counts.items()):
-        print(f"{category:<12}: {count}")
-    print(f"Moved {sum(result.counts.values())} file(s); failed {len(result.errors)}.")
+        print(f'{category:<12}: {count}')
+    print(f'Moved {sum(result.counts.values())} file(s); failed {len(result.errors)}.')
     return 1 if result.errors else 0
 
 
